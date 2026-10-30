@@ -29,4 +29,4 @@ jobs:
           node --check client.js
 
       - name: Tests
-        run: node --test test/
+        run: npm test
