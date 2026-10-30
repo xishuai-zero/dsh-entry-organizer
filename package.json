@@ -1,6 +1,6 @@
 {
   "name": "dsh-entry-organizer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH plugin — drag sidebar panel entries and conversation view tabs into any order, and move entries between the sidebar and the tab strip as real tabs. · 入口编排：侧栏面板条目自由拖拽排序、顶部标签自由排序，条目可在两个区域之间搬移。",
   "type": "module",
   "main": "./index.js",
@@ -18,7 +18,7 @@
   ],
   "engines": {
     "node": ">=22.19.0",
-    "dsh": ">=0.2.1-rc.1"
+    "dsh": ">=0.2.1-rc.5"
   },
   "dsh": {
     "bundle": {

@@ -29,6 +29,9 @@ window.__ModuleLoader__.load({
 
     const NS = 'plugin.entryOrganizer'
     const STORAGE_KEY = 'dsh.entry-organizer.v1'
+    // 存储版本 v2：排序键从「显示文案」换成「p:<panel id> / ~<label>」稳定 key。
+    // 面板改名、语言切换都不会再丢位置；旧 v1 存档在拿到真实条目 id 后原地升级。
+    const STORE_VERSION = 2
     // v0.1.0 之前的插件名是 dsh-entry-arrange：旧键只读一次，用于迁移本机已经保存的顺序。
     const LEGACY_STORAGE_KEY = 'dsh.entry-arrange.v1'
     const FALLBACK_ERROR_LIMIT = 240
@@ -47,6 +50,11 @@ window.__ModuleLoader__.load({
         movedCount: '已搬到顶部',
         movedEmpty: '还没有搬移的条目。',
         moveBack: '移回侧栏',
+        moveUp: '上移',
+        moveDown: '下移',
+        orderSection: '侧栏顺序（键盘 / 触屏等效操作）',
+        tabSection: '顶部标签顺序',
+        orderHint: '不想拖拽时用这里的 ↑ / ↓：每次调一格，和拖拽效果等价，键盘、触屏、读屏都能操作。',
         diagnostics: '诊断信息',
         errLabel: '最近一次错误',
         noError: '无',
@@ -68,6 +76,11 @@ window.__ModuleLoader__.load({
         movedCount: 'Moved to tabs',
         movedEmpty: 'Nothing has been moved yet.',
         moveBack: 'Move back',
+        moveUp: 'Up',
+        moveDown: 'Down',
+        orderSection: 'Sidebar order (keyboard / touch equivalent)',
+        tabSection: 'Tab order',
+        orderHint: 'No dragging needed: use the ↑ / ↓ buttons to move one slot at a time — the same result as dragging, operable with keyboard, touch and screen readers.',
         diagnostics: 'Diagnostics',
         errLabel: 'Last error',
         noError: 'none',
@@ -167,6 +180,10 @@ window.__ModuleLoader__.load({
 .ea-actions { display: flex; gap: 8px; align-items: center; }
 .ea-empty { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
 .ea-error { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); word-break: break-all; }
+.ea-subtitle { margin: 16px 0 6px; font-size: 13px; font-weight: 600; }
+.ea-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ea-actions button:disabled { opacity: 0.45; cursor: default; }
+.ea-actions button + button { margin-inline-start: 6px; }
 `
 
     // ── pure helpers（tests 走 exports.__internals 直接调用）───────────────────
@@ -235,31 +252,66 @@ window.__ModuleLoader__.load({
       return Array.isArray(value) ? value.filter(entry => typeof entry === 'string' && entry !== '') : []
     }
 
+    /**
+     * 排序键：拿到条目 id 时用 `p:<id>` / `v:<id>`；拿不到 id（v1 遗留、条目尚未注册）时用
+     * `~<label>` 兜底。id 才是稳定身份——显示文案会随语言、插件重命名而变。
+     */
+    function keyFromId(kind, id) {
+      return typeof id === 'string' && id !== '' ? kind + ':' + id : null
+    }
+
+    function legacyLabelKey(label) {
+      return '~' + label
+    }
+
+    function isStableKey(entry) {
+      return entry.startsWith('p:') || entry.startsWith('v:') || entry.startsWith('~')
+    }
+
+    /** 搬移项的统一 key：优先 panel id，其次显示文案。 */
+    function movedKey(entry) {
+      if (!entry || typeof entry !== 'object') return ''
+      return keyFromId('p', entry.id) ?? legacyLabelKey(typeof entry.label === 'string' ? entry.label : '')
+    }
+
+    function normalizeMoved(value) {
+      const out = []
+      const seen = new Set()
+      for (const raw of Array.isArray(value) ? value : []) {
+        if (!raw || typeof raw !== 'object') continue
+        const label = typeof raw.label === 'string' ? raw.label : ''
+        const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : null
+        if (id === null && label === '') continue
+        const key = movedKey({ id, label })
+        if (key === '' || seen.has(key)) continue
+        seen.add(key)
+        out.push({ id, label })
+      }
+      return out
+    }
+
     function loadState() {
       const state = emptyState()
       let migrated = false
       try {
         let raw = window.localStorage?.getItem(STORAGE_KEY)
         if (typeof raw !== 'string' || raw === '') {
-          const legacy = window.localStorage?.getItem(LEGACY_STORAGE_KEY)
-          if (typeof legacy !== 'string' || legacy === '') return state
-          raw = legacy
+          const legacyRaw = window.localStorage?.getItem(LEGACY_STORAGE_KEY)
+          if (typeof legacyRaw !== 'string' || legacyRaw === '') return state
+          raw = legacyRaw
           migrated = true
         }
         const parsed = JSON.parse(raw)
         if (!parsed || typeof parsed !== 'object') return state
-        state.sidebarOrder = sanitizeList(parsed.sidebarOrder)
-        state.tabOrder = sanitizeList(parsed.tabOrder)
-        const moved = Array.isArray(parsed.moved) ? parsed.moved : []
-        const seen = new Set()
-        for (const entry of moved) {
-          if (!entry || typeof entry !== 'object') continue
-          const label = typeof entry.label === 'string' ? entry.label : ''
-          if (label === '' || seen.has(label)) continue
-          seen.add(label)
-          state.moved.push({ label, id: typeof entry.id === 'string' ? entry.id : null })
+        // v1 的 sidebarOrder / tabOrder 里存的是显示文案：先包成 `~label`，等条目注册后再升级。
+        const normalizeOrder = value => sanitizeList(value).map(entry => (isStableKey(entry) ? entry : legacyLabelKey(entry)))
+        state.sidebarOrder = normalizeOrder(parsed.sidebarOrder)
+        state.tabOrder = normalizeOrder(parsed.tabOrder)
+        state.moved = normalizeMoved(parsed.moved)
+        if (migrated || parsed.v !== STORE_VERSION) {
+          migrated = true
+          saveState(state)
         }
-        if (migrated) saveState(state)
         return state
       } catch {
         return emptyState()
@@ -269,9 +321,9 @@ window.__ModuleLoader__.load({
     function saveState(state) {
       try {
         window.localStorage?.setItem(STORAGE_KEY, JSON.stringify({
-          v: 1,
+          v: STORE_VERSION,
           sidebarOrder: state.sidebarOrder,
-          moved: state.moved.map(entry => ({ label: entry.label, id: entry.id ?? null })),
+          moved: state.moved.map(entry => ({ id: entry.id ?? null, label: entry.label ?? '' })),
           tabOrder: state.tabOrder,
         }))
       } catch {
@@ -294,6 +346,10 @@ window.__ModuleLoader__.load({
       let chip = false
       let mounted = false
       const launchers = new Map()
+      // 挂载后的宽限期：这期间面板插件可能还没 apply 完，registry 不完整，
+      // 不能据此判定搬移项是幽灵（回归：重启后搬移标签消失）。
+      let mountedAt = 0
+      let pruneGraceMs = 2500
 
       const t = key => {
         const bag = ctx?.locale?.bind ? ctx.locale.bind(NS) : null
@@ -321,17 +377,152 @@ window.__ModuleLoader__.load({
         try { console.warn('[dsh-entry-organizer]', error) } catch { /* 忽略 */ }
       }
 
+      // ── 身份：优先 panel id，文案只用于和 DOM 对账 ─────────────────────────
+
+      function panelKeyFor(label) {
+        const id = panelEntries().find(entry => entry.label === label)?.id ?? null
+        return keyFromId('p', id) ?? legacyLabelKey(label)
+      }
+
+      function viewKeyFor(label) {
+        const entry = viewEntries().find(item => item.label === label)
+        // 已搬进标签行的侧栏条目由插件自己注册启动器（id 是确定性的 viewIdFor(label)），
+        // 注册时点可能还没落到 entriesOfSlot 里，这里直接按同一算法算键，避免键先退化成 `~label`。
+        const id = entry?.id ?? (isMoved(label) ? viewIdFor(label) : null)
+        return keyFromId('v', id) ?? legacyLabelKey(label)
+      }
+
       function isMoved(label) {
-        return state.moved.some(entry => entry.label === label)
+        return movedEntry(label) !== null
+      }
+
+      function isMovedKey(key) {
+        return state.moved.some(entry => movedKey(entry) === key)
       }
 
       function movedEntry(label) {
+        const key = panelKeyFor(label)
+        const exact = state.moved.find(entry => movedKey(entry) === key)
+        if (exact) return exact
+        // v1 遗留：存档只有文案、没有 id，等 upgraded 之后走上面的 exact 分支
+        if (key.startsWith('~')) return null
         return state.moved.find(entry => entry.label === label) ?? null
       }
 
       function save() {
         saveState(state)
+        // 设置页按 DOM 里的 style.order 展示顺序：必须先把状态写回 DOM，再通知订阅者，
+        // 否则第一次点 ↑/↓ 时列表拿到的还是上一轮顺序（回归：第一次点不动、第二次才对）。
+        reconcile()
         publish()
+      }
+
+      // v1 存档里排序键是显示文案；拿到真实条目 id 后一次性升级成稳定 key（面板改名不丢位置）。
+      function upgradeKeys() {
+        let changed = false
+        const upgrade = (list, toKey) => list.map(entry => {
+          if (!entry.startsWith('~')) return entry
+          const next = toKey(entry.slice(1))
+          if (next !== entry) changed = true
+          return next
+        })
+        state.sidebarOrder = upgrade(state.sidebarOrder, panelKeyFor)
+        state.tabOrder = upgrade(state.tabOrder, viewKeyFor)
+        if (changed) saveState(state)
+      }
+
+      // 注册表里已经没有的搬移项会留下点不开的「幽灵标签」，但启动时本插件可能先于
+      // 搬移项所属的面板插件 apply（registry 里暂时没有它）：直接按当前 registry 判幽灵
+      // 会把用户的合法搬移永久删掉。因此只清理「本会话见过、随后又消失」的 id，
+      // 从未见过的先保留等它注册；v1 无 id 的遗留项改为按文案唯一命中回填 id。
+      function pruneMoved() {
+        const panels = panelEntries()
+        if (panels.length === 0) return
+        const byLabel = new Map()
+        for (const entry of panels) {
+          if (typeof entry.id !== 'string' || entry.id === '') continue
+          const list = byLabel.get(entry.label) ?? []
+          list.push(entry.id)
+          byLabel.set(entry.label, list)
+        }
+        let changed = false
+        for (const entry of state.moved) {
+          if (entry.id !== null) continue
+          const matches = byLabel.get(entry.label) ?? []
+          if (matches.length === 1) {
+            entry.id = matches[0]
+            changed = true
+          }
+        }
+        if (Date.now() - mountedAt >= pruneGraceMs) {
+          const ids = new Set(panels.map(entry => entry.id).filter(id => typeof id === 'string' && id !== ''))
+          const labels = new Set(panels.map(entry => entry.label).filter(label => typeof label === 'string' && label !== ''))
+          const kept = state.moved.filter(entry => {
+            // 没有 id 的 v1 遗留项无法可靠判断，保留（等后续回填）
+            if (entry.id === null) return true
+            return ids.has(entry.id) || labels.has(entry.label)
+          })
+          if (kept.length !== state.moved.length) {
+            state.moved = kept
+            changed = true
+            for (const label of [...launchers.keys()]) {
+              if (!isMoved(label)) disposeLauncher(label)
+            }
+          }
+        }
+        if (changed) {
+          saveState(state)
+          publish()
+        }
+      }
+
+      // 其他窗口/标签页改了同一份存储时，把内存状态同步过来（storage 事件只在别的窗口触发）。
+      function reloadFromStorage() {
+        const next = loadState()
+        state.sidebarOrder = next.sidebarOrder
+        state.tabOrder = next.tabOrder
+        state.moved = next.moved
+        syncLaunchers()
+        publish()
+      }
+
+      function swapKey(list, from, delta) {
+        const at = list.indexOf(from)
+        const to = at + delta
+        if (at < 0 || to < 0 || to >= list.length) return null
+        const next = list.slice()
+        next.splice(at, 1)
+        next.splice(to, 0, from)
+        return next
+      }
+
+      function visiblePanelKeys() {
+        const keys = []
+        for (const row of sidebarRows()) {
+          const label = rowLabel(row)
+          if (label === '' || isMoved(label)) continue
+          const key = panelKeyFor(label)
+          if (!keys.includes(key)) keys.push(key)
+        }
+        return keys
+      }
+
+      // 键盘 / 触屏等效操作：设置页的 ↑/↓，不依赖拖拽。
+      function nudgeSidebar(label, delta) {
+        state.sidebarOrder = arrangeList(state.sidebarOrder, visiblePanelKeys())
+        const next = swapKey(state.sidebarOrder, panelKeyFor(label), delta)
+        if (!next) return
+        state.sidebarOrder = next
+        save()
+      }
+
+      function nudgeTab(label, delta, nth = 0) {
+        const keys = tabRecords().filter(record => record.index > 0).map(record => record.key).filter(key => key !== '')
+        state.tabOrder = arrangeList(state.tabOrder, keys)
+        const next = swapKey(state.tabOrder, tabKeyForLabel(label, nth), delta)
+        if (!next) return
+        state.tabOrder = next
+        save()
       }
 
       // 侧栏 / 标签行的 slot 条目快照：id + 当前 locale 文案
@@ -361,17 +552,30 @@ window.__ModuleLoader__.load({
       // ── 启动器标签（真实 conversation.view）────────────────────────────────
 
       function makeLauncher(label) {
-        return function Launcher() {
-          useEffect(() => { void launch(label) }, [label])
+        return function Launcher(props) {
+          useEffect(() => { void launch(label, props) }, [label])
           return null
         }
       }
 
-      async function launch(label) {
+      async function launch(label, props) {
         const entry = movedEntry(label)
         if (!entry) return
-        // 先把视图状态切回对话，避免下次打开会话又落回这个启动器。
-        if (typeof launchSwitcher === 'function') {
+        // conversation.view 的选中态由宿主 conversation store 持久化：点搬入标签后要先把当前视图
+        // 切回「对话」，否则打开面板后用户点「返回对话」，宿主会以这个启动器视图重新挂载 →
+        // 启动器再次打开面板，形成打不开对话的死循环。
+        const openView = props?.openView ?? props?.setView ?? null
+        let switched = false
+        if (typeof openView === 'function') {
+          try {
+            openView('chat')
+            switched = true
+          } catch (error) {
+            recordError(error)
+          }
+        }
+        // 拿不到 openView 时退回点固定首位「对话」标签（会走宿主的 selectView('chat') 复位）。
+        if (!switched && typeof launchSwitcher === 'function' && tabButtons().length > 0) {
           try { launchSwitcher() } catch (error) { recordError(error) }
         }
         const id = panelIdFor(label)
@@ -472,12 +676,51 @@ window.__ModuleLoader__.load({
         return (button.textContent ?? '').trim()
       }
 
+      // 宿主里存在「不同 id、同一文案」的视图（dsh-context 的「上下文」和 billion-context 的
+      // `bili-context` 都叫「上下文」）。只按文案反查 id 会让两行共用同一个排序键；
+      // 这里按同名出现的次序把 DOM 标签映射回 slot 条目 id，得到互不相同的稳定键。
+      function tabRecords() {
+        const buttons = tabButtons()
+        const idsByLabel = new Map()
+        for (const entry of viewEntries()) {
+          const list = idsByLabel.get(entry.label) ?? []
+          list.push(entry.id)
+          idsByLabel.set(entry.label, list)
+        }
+        const visible = new Map()
+        const drafts = []
+        for (let index = 0; index < buttons.length; index++) {
+          const label = tabLabel(buttons[index])
+          const nth = visible.get(label) ?? 0
+          visible.set(label, nth + 1)
+          drafts.push({ button: buttons[index], index, label, nth })
+        }
+        return drafts.map(draft => {
+          const ids = idsByLabel.get(draft.label) ?? []
+          // 同名视图里有条目没渲染出来时（被隐藏/进溢出菜单），按可见次序无法确定 id 归属；
+          // 此时退回「文案 + 第几次出现」键：宁可顺序不跟随 id，也不能把两个视图写成同一个键。
+          const ambiguous = ids.length > 1 && visible.get(draft.label) !== ids.length
+          let id = ambiguous ? null : (ids[draft.nth] ?? null)
+          if (id === null && draft.index > 0 && isMoved(draft.label)) id = viewIdFor(draft.label)
+          const fallback = draft.nth === 0 ? legacyLabelKey(draft.label) : legacyLabelKey(draft.label) + '#' + draft.nth
+          return { ...draft, key: keyFromId('v', id) ?? fallback }
+        })
+      }
+
+      function tabKeyForLabel(label, nth = 0) {
+        const record = tabRecords().find(item => item.label === label && item.nth === nth)
+        return record?.key ?? viewKeyFor(label)
+      }
+
       function moreButton() {
         const rows = sidebarRows()
         const nav = rows[0]?.parentElement
         if (!nav) return null
+        // 真实页面里「更多」被包在 Menu 组件根节点（div.wtg9ga_moreAnchor）中，
+        // aria-haspopup 按钮不是 nav 的直系子节点；flex order 只有写在直系子节点上才生效。
         for (const child of nav.children ?? []) {
           if (child.tagName === 'BUTTON' && child.getAttribute?.('aria-haspopup')) return child
+          if (child.querySelector?.('button[aria-haspopup]')) return child
         }
         return null
       }
@@ -486,11 +729,19 @@ window.__ModuleLoader__.load({
 
       function ensurePlaceholder(nav, afterOrder) {
         if (!nav) return null
+        // 热加载或旧实例未卸载时，页面上可能残留别人的占位框：优先接管并清掉多余节点，
+        // 保证任何时刻只有一个占位框，避免侧栏出现两个虚线空位。
+        if (!placeholder || placeholder.parentElement === null) {
+          placeholder = document.querySelector('[data-ea-placeholder="1"]') ?? null
+        }
         if (!placeholder) {
           placeholder = document.createElement('div')
           placeholder.className = 'ea-placeholder'
           placeholder.setAttribute('data-ea-placeholder', '1')
           placeholder.textContent = t('dropHere')
+        }
+        for (const stray of document.querySelectorAll('[data-ea-placeholder="1"]')) {
+          if (stray !== placeholder) stray.remove()
         }
         if (placeholder.parentElement !== nav) nav.appendChild(placeholder)
         placeholder.style.order = String(afterOrder)
@@ -501,16 +752,36 @@ window.__ModuleLoader__.load({
       function reconcile() {
         if (!mounted) return
         try {
+          upgradeKeys()
+          pruneMoved()
+
+          const before = JSON.stringify([state.sidebarOrder, state.tabOrder])
           const rows = sidebarRows()
-          const labels = rows.map(rowLabel).filter(label => label !== '')
-          const visible = labels.filter(label => !isMoved(label))
-          state.sidebarOrder = arrangeList(state.sidebarOrder, visible)
+          // 逐行取自己的 label：任一行为空标签时不能再用「过滤后的数组下标」去对齐 rows（回归：索引错位）。
+          const records = []
+          for (const row of rows) {
+            const label = rowLabel(row)
+            if (label === '') continue
+            records.push({ row, label, key: panelKeyFor(label) })
+          }
+          // 裁剪集合要同时包含 registry 里已注册的面板与当前 DOM 行：
+          // 启动早期行可能还没渲染、或面板插件晚注册，只按 DOM 裁剪会把已存顺序清空并立即落盘
+          // （回归：自定义侧栏顺序在重启后丢失）。
+          const movedIds = new Set(state.moved.map(entry => entry.id).filter(id => typeof id === 'string' && id !== ''))
+          const movedLabels = new Set(state.moved.map(entry => entry.label))
+          const registryPanelKeys = panelEntries()
+            // 已经搬去标签行的条目不该被 registry 兜底重新塞回侧栏顺序里
+            .filter(entry => !movedIds.has(entry.id) && !movedLabels.has(entry.label))
+            .map(entry => keyFromId('p', entry.id))
+            .filter(key => typeof key === 'string' && key !== '')
+          const presentKeys = new Set([
+            ...records.filter(item => !isMoved(item.label)).map(item => item.key),
+            ...registryPanelKeys,
+          ])
+          if (presentKeys.size > 0) state.sidebarOrder = arrangeList(state.sidebarOrder, [...presentKeys])
 
           let visibleIndex = 0
-          for (let index = 0; index < rows.length; index++) {
-            const row = rows[index]
-            const label = labels[index]
-            if (label === undefined) continue
+          for (const { row, label, key } of records) {
             row.setAttribute('data-ea-row', '1')
             row.setAttribute('data-ea-label', label)
             if (isMoved(label)) {
@@ -521,7 +792,7 @@ window.__ModuleLoader__.load({
               continue
             }
             row.style.display = ''
-            const at = state.sidebarOrder.indexOf(label)
+            const at = state.sidebarOrder.indexOf(key)
             row.style.order = String(at >= 0 ? at + 1 : visibleIndex + 1)
             row.setAttribute('data-ea-draggable', '1')
             row.setAttribute('draggable', 'true')
@@ -529,42 +800,59 @@ window.__ModuleLoader__.load({
             visibleIndex++
           }
 
-          const nav = rows[0]?.parentElement ?? null
+          const nav = records[0]?.row?.parentElement ?? null
           if (nav) {
+            // 「更多」是面板列表的最后一项，占位框要排在它之后（回归：占位框跑到「更多」上方）。
+            const moreOrder = visibleIndex + 1
             const more = moreButton()
-            if (more) more.style.order = '10000'
-            ensurePlaceholder(nav, visibleIndex + 1)
+            if (more) more.style.order = String(moreOrder)
+            ensurePlaceholder(nav, moreOrder + 1)
           }
 
           // 顶部标签：第 0 个是官方固定的「对话」，其余按 tabOrder 视觉重排。
           // 裁剪时要把「已注册但还没渲染出来的 view（含刚注册的启动器、被收进更多菜单的标签）」
           // 也算进已知集合，否则刚搬过去的条目会在渲染前被裁掉、位置丢失。
-          const tabs = tabButtons()
-          const labels2 = tabs.map(tabLabel)
-          const chatLabel = labels2[0] ?? ''
-          const known = viewEntries().map(entry => entry.label).filter(label => label !== null && label !== '')
-          const knownAll = new Set([...labels2.slice(1), ...known, ...state.moved.map(entry => entry.label)])
-          knownAll.delete(chatLabel)
-          const rest = [...knownAll].filter(label => label !== '')
-          state.tabOrder = arrangeList(state.tabOrder, rest)
-          for (let index = 0; index < tabs.length; index++) {
-            const tab = tabs[index]
-            const label = labels2[index] ?? ''
-            if (label === '') continue
-            if (index === 0) {
+          // 键一律用 view id：同名不同 id 的视图（「上下文」）必须各占一个位置（回归：重复标签撞键）。
+          const tabRecordsList = tabRecords()
+          const fixedKey = tabRecordsList[0]?.key ?? null
+          const keep = []
+          const addTabKey = key => {
+            if (key === null || key === undefined || key === '' || key === fixedKey) return
+            if (!keep.includes(key)) keep.push(key)
+          }
+          for (const record of tabRecordsList) {
+            if (record.index === 0) continue
+            addTabKey(record.key)
+          }
+          for (const entry of viewEntries()) addTabKey(keyFromId('v', entry.id))
+          for (const entry of state.moved) addTabKey(keyFromId('v', viewIdFor(entry.label)))
+          if (keep.length > 0) state.tabOrder = arrangeList(state.tabOrder, keep)
+          // 第一标签标记必须每轮重算并清掉旧的：标签顺序变化后旧标记会残留，把计数和判定带偏。
+          for (const tab of tabButtons()) tab.removeAttribute('data-ea-fixed')
+          for (const record of tabRecordsList) {
+            const tab = record.button
+            if (record.label === '') continue
+            if (record.index === 0) {
               tab.style.order = '0'
+              tab.setAttribute('data-ea-fixed', '1')
               tab.removeAttribute('draggable')
               tab.removeAttribute('data-ea-tab')
+              tab.removeAttribute('data-ea-tabkey')
               continue
             }
-            const at = state.tabOrder.indexOf(label)
-            tab.style.order = String(at >= 0 ? at + 1 : 500 + index)
+            tab.removeAttribute('data-ea-fixed')
+            const at = state.tabOrder.indexOf(record.key)
+            tab.style.order = String(at >= 0 ? at + 1 : 500 + record.index)
             tab.setAttribute('data-ea-tab', '1')
-            tab.setAttribute('data-ea-label', label)
+            tab.setAttribute('data-ea-label', record.label)
+            tab.setAttribute('data-ea-tabkey', record.key)
             tab.setAttribute('data-ea-draggable', '1')
             tab.setAttribute('draggable', 'true')
             tab.classList?.add('ea-draggable')
           }
+
+          // 顺序变化时立即落盘：宿主没再触发 reconcile 时重启也不会丢（回归：顺序不落盘）。
+          if (JSON.stringify([state.sidebarOrder, state.tabOrder]) !== before) saveState(state)
 
           // 「返回对话」浮标：只有当前打开的面板行是被搬走的那些行时才出现。
           let nextChip = false
@@ -584,20 +872,40 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 用 rAF 合并高频变更：拖拽/布局抖动时不再每个 mutation 立即全量 reconcile。
       function schedule() {
         if (scheduled) return
         scheduled = true
-        queueMicrotask(() => {
+        const run = () => {
           scheduled = false
           reconcile()
-        })
+        }
+        if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run)
+        else queueMicrotask(run)
       }
 
       // ── 拖拽 ───────────────────────────────────────────────────────────────
 
+      // 只清理本实例加过的标记：不再每次 dragover 都做全文档查询（回归：性能热点）。
+      const marked = new Set()
+
+      function mark(element, className) {
+        if (!element?.classList) return
+        element.classList.add(className)
+        marked.add(element)
+      }
+
       function clearMarkers() {
-        for (const el of document.querySelectorAll('.ea-drop-before,.ea-drop-after,.ea-tab-drop-before,.ea-tab-drop-after,.ea-drop-strip')) {
-          el.classList.remove('ea-drop-before', 'ea-drop-after', 'ea-tab-drop-before', 'ea-tab-drop-after', 'ea-drop-strip')
+        for (const element of marked) {
+          element.classList?.remove('ea-drop-before', 'ea-drop-after', 'ea-tab-drop-before', 'ea-tab-drop-after', 'ea-drop-strip')
+        }
+        marked.clear()
+      }
+
+      // 一次性清掉旧实例可能遗留的标记类：只在启动与一次拖拽结束时执行，不在高频路径里。
+      function clearStrayMarkers() {
+        for (const element of document.querySelectorAll('.ea-drop-before,.ea-drop-after,.ea-tab-drop-before,.ea-tab-drop-after,.ea-drop-strip')) {
+          element.classList.remove('ea-drop-before', 'ea-drop-after', 'ea-tab-drop-before', 'ea-tab-drop-after', 'ea-drop-strip')
         }
       }
 
@@ -625,7 +933,11 @@ window.__ModuleLoader__.load({
         if (!row && !tab) return
         const label = (row ?? tab).getAttribute('data-ea-label') ?? ''
         if (label === '') return
-        dragging = { kind: row ? 'row' : 'tab', label }
+        dragging = {
+          kind: row ? 'row' : 'tab',
+          label,
+          key: row ? null : (tab.getAttribute('data-ea-tabkey') ?? null),
+        }
         try {
           event.dataTransfer?.setData('text/plain', label)
           if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
@@ -649,16 +961,16 @@ window.__ModuleLoader__.load({
             event.preventDefault()
             const hovered = target.closest?.('button[role="tab"]')
             if (hovered && hovered !== target.closest('button[data-ea-row="1"]')) {
-              hovered.classList?.add(relativeAfterX(hovered, event) ? 'ea-tab-drop-after' : 'ea-tab-drop-before')
+              mark(hovered, relativeAfterX(hovered, event) ? 'ea-tab-drop-after' : 'ea-tab-drop-before')
             } else {
-              strip.classList?.add('ea-drop-strip')
+              mark(strip, 'ea-drop-strip')
             }
             return
           }
           const hoveredTab = target.closest?.('button[data-ea-tab="1"]')
           if (hoveredTab && isDraggableTab(hoveredTab)) {
             event.preventDefault()
-            hoveredTab.classList?.add(relativeAfterX(hoveredTab, event) ? 'ea-tab-drop-after' : 'ea-tab-drop-before')
+            mark(hoveredTab, relativeAfterX(hoveredTab, event) ? 'ea-tab-drop-after' : 'ea-tab-drop-before')
           }
           return
         }
@@ -666,63 +978,64 @@ window.__ModuleLoader__.load({
         if (row) {
           if (dragging.kind === 'row') {
             event.preventDefault()
-            row.classList?.add(relativeAfter(row, event) ? 'ea-drop-after' : 'ea-drop-before')
+            mark(row, relativeAfter(row, event) ? 'ea-drop-after' : 'ea-drop-before')
             return
           }
           if (movedEntry(dragging.label)) {
             event.preventDefault()
-            row.classList?.add(relativeAfter(row, event) ? 'ea-drop-after' : 'ea-drop-before')
+            mark(row, relativeAfter(row, event) ? 'ea-drop-after' : 'ea-drop-before')
           }
           return
         }
         if (target === placeholder || target?.closest?.('[data-ea-placeholder="1"]')) {
           if (dragging.kind === 'tab' && movedEntry(dragging.label)) {
             event.preventDefault()
-            placeholder?.classList.add('ea-drop-strip')
+            mark(placeholder, 'ea-drop-strip')
           }
         }
       }
 
       function reorderSidebar(label, target, after) {
-        const visible = state.sidebarOrder.filter(item => !isMoved(item))
-        state.sidebarOrder = moveRelative(visible, label, target, after)
+        const visible = state.sidebarOrder.filter(item => !isMovedKey(item))
+        state.sidebarOrder = moveRelative(visible, panelKeyFor(label), panelKeyFor(target), after)
         save()
-        reconcile()
       }
 
-      function reorderTabs(label, target, after) {
-        state.tabOrder = moveRelative(state.tabOrder, label, target, after)
+      function reorderTabs(fromKey, toKey, after) {
+        if (!fromKey || !toKey || fromKey === toKey) return
+        state.tabOrder = moveRelative(state.tabOrder, fromKey, toKey, after)
         save()
-        reconcile()
       }
 
-      function moveToTabs(label, target, after) {
+      function moveToTabs(label, targetKey, after) {
         const entry = { label, id: panelIdFor(label) }
-        state.sidebarOrder = state.sidebarOrder.filter(item => item !== label)
-        state.moved = state.moved.concat([entry])
-        const rest = state.tabOrder.filter(item => item !== label)
-        if (target && rest.includes(target)) {
-          state.tabOrder = moveRelative(rest, label, target, after)
+        const key = movedKey(entry)
+        const tabKey = keyFromId('v', viewIdFor(label)) ?? viewKeyFor(label)
+        state.sidebarOrder = state.sidebarOrder.filter(item => item !== key)
+        if (!isMovedKey(key)) state.moved = state.moved.concat([entry])
+        const rest = state.tabOrder.filter(item => item !== tabKey)
+        if (targetKey !== null && targetKey !== undefined && rest.includes(targetKey)) {
+          state.tabOrder = moveRelative(rest, tabKey, targetKey, after)
         } else {
-          state.tabOrder = rest.concat([label])
+          state.tabOrder = rest.concat([tabKey])
         }
         syncLaunchers()
         save()
-        reconcile()
       }
 
       function moveToSidebar(label, target, after) {
         const entry = movedEntry(label)
         if (!entry) return
-        state.moved = state.moved.filter(item => item.label !== label)
-        state.tabOrder = state.tabOrder.filter(item => item !== label)
-        const visible = state.sidebarOrder.filter(item => item !== label && !isMoved(item))
-        state.sidebarOrder = target && visible.includes(target)
-          ? moveRelative(visible, label, target, after)
-          : visible.concat([label])
+        const panelKey = panelKeyFor(label)
+        state.moved = state.moved.filter(item => movedKey(item) !== movedKey(entry) && item.label !== label)
+        state.tabOrder = state.tabOrder.filter(item => item !== viewKeyFor(label))
+        const visible = state.sidebarOrder.filter(item => item !== panelKey && !isMovedKey(item))
+        const targetKey = target === null || target === undefined ? null : panelKeyFor(target)
+        state.sidebarOrder = targetKey !== null && visible.includes(targetKey)
+          ? moveRelative(visible, panelKey, targetKey, after)
+          : visible.concat([panelKey])
         disposeLauncher(label)
         save()
-        reconcile()
       }
 
       function onDrop(event) {
@@ -734,10 +1047,10 @@ window.__ModuleLoader__.load({
           const hovered = target.closest?.('button[role="tab"]')
           const hoveredTab = target.closest?.('button[data-ea-tab="1"]')
           if (dragging.kind === 'row') {
-            const hoveredLabel = hovered ? tabLabel(hovered) : null
-            moveToTabs(dragging.label, hoveredLabel, hovered ? relativeAfterX(hovered, event) : false)
+            const hoveredKey = hovered?.getAttribute?.('data-ea-tabkey') ?? null
+            moveToTabs(dragging.label, hoveredKey, hovered ? relativeAfterX(hovered, event) : false)
           } else if (hoveredTab && isDraggableTab(hoveredTab)) {
-            reorderTabs(dragging.label, tabLabel(hoveredTab), relativeAfterX(hoveredTab, event))
+            reorderTabs(dragging.key, hoveredTab.getAttribute?.('data-ea-tabkey') ?? null, relativeAfterX(hoveredTab, event))
           }
           finishDrag()
           return
@@ -767,6 +1080,7 @@ window.__ModuleLoader__.load({
         active?.classList?.remove('ea-dragging')
         dragging = null
         clearMarkers()
+        clearStrayMarkers()
         if (placeholder) placeholder.setAttribute('data-ea-show', state.moved.length > 0 ? '1' : '0')
         reconcile()
       }
@@ -784,8 +1098,16 @@ window.__ModuleLoader__.load({
         mounted = true
         viewSlotReady = false
         launchers.clear()
-        // 视图状态切回对话：ctx 上没有公开的 conversation 控制器，直接点官方的「对话」标签。
+        // 视图状态切回对话：优先走官方 layout API（不依赖标签顺序），失败再点第一个标签兜底。
         launchSwitcher = () => {
+          if (ctx?.layout?.selectPanel) {
+            try {
+              ctx.layout.selectPanel(null)
+              return
+            } catch (error) {
+              recordError(error)
+            }
+          }
           const tabs = tabButtons()
           if (tabs.length > 0) tabs[0].click()
         }
@@ -795,28 +1117,91 @@ window.__ModuleLoader__.load({
         return ctx.slots.inject('conversation.view', () => {
           viewSlotReady = true
           syncLaunchers()
+          // 宿主契约：inject 回调应返回同步 disposer，声明卸载时用它回收本插件注册的启动器。
+          return () => {
+            viewSlotReady = false
+            for (const label of [...launchers.keys()]) disposeLauncher(label)
+          }
         })
       }
 
-      // 浮标贴主内容区左上角：侧栏宽度变化（收起、拖拽手柄）时跟着走。
+      // 浮标贴主内容区左上角：优先按侧栏实际宽度定位；测量不到时退回布局列宽，最后退回 16px。
       function chipInset() {
-        let frame = document.querySelector('[data-slot="sidebar"]')
-        while (frame && !(frame.style && frame.style.gridTemplateColumns)) frame = frame.parentElement
-        let left = 16
+        const frame = document.querySelector('[data-slot="sidebar"]')
         if (frame) {
           try {
-            const first = String(getComputedStyle(frame).gridTemplateColumns || '').split(' ')[0] ?? ''
+            const rect = frame.getBoundingClientRect?.()
+            if (rect && rect.width > 0) return Math.round(rect.width) + 12
+          } catch { /* 测量失败时继续找布局列宽 */ }
+          let node = frame
+          while (node) {
+            let template = ''
+            try {
+              const computed = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null
+              template = String(node.style?.gridTemplateColumns || computed?.gridTemplateColumns || '')
+            } catch { template = '' }
+            const first = template.split(' ')[0] ?? ''
             const width = Number.parseFloat(first)
-            if (Number.isFinite(width) && width > 0) left = Math.round(width) + 12
-          } catch { /* 布局不可测量时退回默认值 */ }
+            if (Number.isFinite(width) && width > 0) return Math.round(width) + 12
+            node = node.parentElement
+          }
         }
-        return left
+        return 16
+      }
+
+      // mutation 是否可能影响侧栏/标签行：无关的会话滚动、消息追加不再触发全量 reconcile。
+      function relevantMutation(record) {
+        if (record.type === 'attributes') {
+          // 侧栏折叠状态挂在 layout 框架上（不在 nav 祖先链里），也要能触发重算：浮标位置依赖侧栏宽度。
+          if (record.target?.hasAttribute?.('data-sidebar-collapsed')) return true
+          return Boolean(record.target?.closest?.('nav, [data-conversation-tabs], [data-slot="sidebar"], [data-sidebar-collapsed]'))
+        }
+        if (record.target?.closest?.('nav, [data-conversation-tabs]')) return true
+        for (const node of [...(record.addedNodes ?? []), ...(record.removedNodes ?? [])]) {
+          if (!node || node.nodeType !== 1) continue
+          if (node.matches?.('nav, button, [data-conversation-tabs], [data-slot], [data-ea-placeholder]')) return true
+          if (node.querySelector?.('[data-slot="sidebar.panellist"], [data-conversation-tabs], nav')) return true
+        }
+        return false
+      }
+
+      // 卸载/热重载时把宿主 DOM 还原成我们接手前的样子：
+      // 否则被搬走的行会一直 display:none，而对应 launcher 已经 dispose，面板不可达。
+      function restoreDom() {
+        try {
+          for (const row of sidebarRows()) {
+            row.style.order = ''
+            row.style.display = ''
+            row.removeAttribute('data-ea-row')
+            row.removeAttribute('data-ea-label')
+            row.removeAttribute('data-ea-draggable')
+            row.removeAttribute('draggable')
+            row.classList?.remove('ea-draggable')
+          }
+          for (const tab of tabButtons()) {
+            tab.style.order = ''
+            tab.removeAttribute('data-ea-fixed')
+            tab.removeAttribute('data-ea-tab')
+            tab.removeAttribute('data-ea-label')
+            tab.removeAttribute('data-ea-tabkey')
+            tab.removeAttribute('data-ea-draggable')
+            tab.removeAttribute('draggable')
+            tab.classList?.remove('ea-draggable')
+          }
+        } catch {
+          // 宿主结构变化时忽略
+        }
       }
 
       function startDom() {
+        mountedAt = Date.now()
+        upgradeKeys()
+        clearStrayMarkers()
         reconcile()
         try {
-          observer = new MutationObserver(() => schedule())
+          observer = new MutationObserver(records => {
+            if (records.some(relevantMutation)) schedule()
+          })
           observer.observe(document.body, {
             childList: true,
             subtree: true,
@@ -826,7 +1211,17 @@ window.__ModuleLoader__.load({
         } catch (error) {
           recordError(error)
         }
-        window.addEventListener?.('resize', schedule)
+        const onResize = () => {
+          schedule()
+          if (chip) publish()
+        }
+        const onStorage = event => {
+          if (event?.key !== STORAGE_KEY && event?.key !== LEGACY_STORAGE_KEY) return
+          reloadFromStorage()
+          schedule()
+        }
+        window.addEventListener?.('resize', onResize)
+        window.addEventListener?.('storage', onStorage)
         document.addEventListener('dragstart', onDragStart, true)
         document.addEventListener('dragover', onDragOver, true)
         document.addEventListener('drop', onDrop, true)
@@ -835,11 +1230,15 @@ window.__ModuleLoader__.load({
         return () => {
           observer?.disconnect()
           observer = null
-          window.removeEventListener?.('resize', schedule)
+          window.removeEventListener?.('resize', onResize)
+          window.removeEventListener?.('storage', onStorage)
           document.removeEventListener('dragstart', onDragStart, true)
           document.removeEventListener('dragover', onDragOver, true)
           document.removeEventListener('drop', onDrop, true)
           document.removeEventListener('dragend', onDragEnd, true)
+          clearMarkers()
+          clearStrayMarkers()
+          restoreDom()
           placeholder?.remove()
           placeholder = null
           for (const label of [...launchers.keys()]) disposeLauncher(label)
@@ -849,11 +1248,45 @@ window.__ModuleLoader__.load({
 
       // ── 供设置页使用 ───────────────────────────────────────────────────────
 
+      // 设置页要展示「当前视觉顺序」：DOM 里只有 style.order，按它排序后给出文案列表。
+      function sidebarList() {
+        const list = []
+        for (const row of sidebarRows()) {
+          const label = rowLabel(row)
+          if (label === '' || isMoved(label)) continue
+          const order = Number.parseInt(row.style.order, 10)
+          list.push({ label, order: Number.isFinite(order) ? order : list.length + 1 })
+        }
+        list.sort((a, b) => a.order - b.order)
+        return list.map(entry => entry.label)
+      }
+
+      function tabList() {
+        const records = tabRecords().filter(record => record.index > 0 && record.label !== '')
+        const counts = new Map()
+        for (const record of records) counts.set(record.label, (counts.get(record.label) ?? 0) + 1)
+        const list = records.map(record => {
+          const order = Number.parseInt(record.button.style.order, 10)
+          return {
+            label: record.label,
+            key: record.key,
+            nth: record.nth,
+            duplicate: (counts.get(record.label) ?? 0) > 1,
+            order: Number.isFinite(order) ? order : 500 + record.index,
+          }
+        })
+        list.sort((a, b) => a.order - b.order)
+        return list.map(({ label, key, nth, duplicate }) => ({ label, key, nth, duplicate }))
+      }
+
       function settingsSnapshot() {
         return {
           sidebarRows: sidebarRows().length,
-          tabLabels: Math.max(0, tabButtons().length - 1),
-          moved: state.moved.map(entry => entry.label),
+          // 固定首位的「对话」不算可排序标签（回归：标签计数把不可拖的占位也算进去）。
+          tabLabels: tabButtons().filter(tab => tab.getAttribute?.('data-ea-fixed') !== '1').length,
+          moved: state.moved.map(entry => entry.label ?? entry.id ?? ''),
+          sidebarList: sidebarList(),
+          tabList: tabList(),
           sidebarOrder: state.sidebarOrder.slice(),
           tabOrder: state.tabOrder.slice(),
           lastError,
@@ -866,19 +1299,18 @@ window.__ModuleLoader__.load({
         state.moved = []
         for (const label of [...launchers.keys()]) disposeLauncher(label)
         save()
-        reconcile()
       }
 
       // 标签行容量有限，搬入的标签一旦被截断进「...」菜单就没有可拖的 DOM 节点；
       // 这个方法是那种状态下的唯一可视化逃生口：全部还原到侧栏末尾。
       function restoreAll() {
         if (state.moved.length === 0) return
-        const labels = state.moved.map(entry => entry.label)
+        const viewKeys = state.moved.map(entry => viewKeyFor(entry.label))
+        const panelKeys = state.moved.map(entry => (entry.id ? keyFromId('p', entry.id) : panelKeyFor(entry.label)))
         state.moved = []
-        state.tabOrder = state.tabOrder.filter(item => !labels.includes(item))
-        state.sidebarOrder = state.sidebarOrder.concat(labels.filter(label => !state.sidebarOrder.includes(label)))
+        state.tabOrder = state.tabOrder.filter(key => !viewKeys.includes(key))
+        state.sidebarOrder = state.sidebarOrder.concat(panelKeys.filter(key => key !== null && !state.sidebarOrder.includes(key)))
         save()
-        reconcile()
       }
 
       function returnToConversation() {
@@ -902,9 +1334,13 @@ window.__ModuleLoader__.load({
         returnToConversation,
         chipInset,
         restore: label => moveToSidebar(label, null, false),
+        nudgeSidebar,
+        nudgeTab,
         startViewSlot,
         startDom,
         reconcile,
+        // 测试用：把 prune 宽限期设为 0，避免等待 2.5s 启动窗口
+        setPruneGrace(ms) { pruneGraceMs = Math.max(0, Number(ms) || 0) },
         get chip() { return chip },
         get lastError() { return lastError },
         // tests
@@ -945,7 +1381,38 @@ window.__ModuleLoader__.load({
         controller.reset()
         setNote(t('resetConfirm'))
       }, [])
-      const rows = snap.moved.map(label => h('li', { key: label, className: 'ea-item' },
+
+      // 拖拽之外必须还有等效操作：键盘/触屏用户（以及标签被「...」截断时）用 ↑/↓ 调整顺序。
+      const stepButton = (kind, label, delta, disabled, nth = 0) => h('button', {
+        type: 'button',
+        disabled,
+        title: t('orderHint'),
+        onClick: () => {
+          if (kind === 'sidebar') controller.nudgeSidebar(label, delta)
+          else controller.nudgeTab(label, delta, nth)
+        },
+      }, delta < 0 ? '↑ ' + t('moveUp') : '↓ ' + t('moveDown'))
+
+      // 侧栏项是纯文案；标签项带 key/nth（同名视图要靠它们区分，否则两行会互相顶替、还会撞 React key）。
+      const orderRows = (kind, list) => list.map((item, index) => {
+        const label = typeof item === 'string' ? item : item.label
+        const nth = typeof item === 'string' ? 0 : (item.nth ?? 0)
+        const unique = typeof item === 'string' ? label : item.key
+        const name = typeof item !== 'string' && item.duplicate ? label + ' #' + (nth + 1) : label
+        return h('li', {
+          key: kind + ':' + unique + ':' + index,
+          className: 'ea-item',
+        },
+          h('span', { className: 'ea-item-name' }, name),
+          h('div', { className: 'ea-actions' },
+            stepButton(kind, label, -1, index === 0, nth),
+            stepButton(kind, label, 1, index === list.length - 1, nth)))
+      })
+
+      const movedRows = snap.moved.map((label, index) => h('li', {
+        key: 'moved:' + index + ':' + label,
+        className: 'ea-item',
+      },
         h('span', { className: 'ea-item-name' }, label),
         h('button', { type: 'button', onClick: () => controller.restore(label) }, t('moveBack'))))
 
@@ -963,10 +1430,19 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ea-stat' },
             h('div', { className: 'ea-stat-label' }, t('movedCount')),
             h('div', { className: 'ea-stat-value' }, String(snap.moved.length)))),
+        h('h3', { className: 'ea-subtitle' }, t('orderSection')),
+        h('p', { className: 'ea-hint' }, t('orderHint')),
+        snap.sidebarList.length === 0
+          ? h('p', { className: 'ea-empty' }, t('emptyNote'))
+          : h('ul', { className: 'ea-list' }, orderRows('sidebar', snap.sidebarList)),
+        h('h3', { className: 'ea-subtitle' }, t('tabSection')),
+        snap.tabList.length === 0
+          ? h('p', { className: 'ea-empty' }, t('emptyNote'))
+          : h('ul', { className: 'ea-list' }, orderRows('tab', snap.tabList)),
         h('h3', { className: 'ea-subtitle' }, t('movedCount')),
         snap.moved.length === 0
           ? h('p', { className: 'ea-empty' }, t('movedEmpty'))
-          : h('ul', { className: 'ea-list' }, rows),
+          : h('ul', { className: 'ea-list' }, movedRows),
         note !== '' ? h('p', { className: 'ea-hint' }, note) : null,
         h('div', { className: 'ea-actions' },
           h('button', { type: 'button', onClick: reset }, t('reset'))),
@@ -1030,8 +1506,9 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     exports.apply = apply
     exports.inject = ['slots', 'locale', 'layout']
-    exports.name = 'entry-organizer'
-    exports.__internals = { arrangeList, moveRelative, viewIdFor, labelText, createController, controller }
+    // 与 package.json 的 name / cordis.patch.yml 的 name 保持一致，避免宿主诊断与 HMR 身份错位。
+    exports.name = 'dsh-entry-organizer'
+    exports.__internals = { arrangeList, moveRelative, viewIdFor, labelText, createController, controller, ReturnChip, SettingsPage, ViewsMoreRestoreAction }
     return module.exports
   },
 })

@@ -291,14 +291,26 @@ export function createStorage(seed = {}) {
   };
 }
 
+// 记录本进程里创建过的 MutationObserver，供测试断言接线参数（每次 loadClient 会清空）。
+const OBSERVERS = [];
+
 class FakeMutationObserver {
   constructor(callback) {
     this.callback = callback;
+    this.target = null;
+    this.options = null;
+    this.disconnected = false;
+    OBSERVERS.push(this);
   }
 
-  observe() { }
+  observe(target, options) {
+    this.target = target;
+    this.options = options ?? null;
+  }
 
-  disconnect() { }
+  disconnect() {
+    this.disconnected = true;
+  }
 }
 
 // ── client bundle 加载 ──────────────────────────────────────────────────────
@@ -313,14 +325,73 @@ const REACT_STUB = {
   useCallback: fn => fn,
 };
 
+/** 供组件测试构造元素树（与 client 内部用的同一个 createElement 实现）。 */
+export const h = REACT_STUB.createElement;
+
+/**
+ * 递归展开函数组件，得到纯元素树：函数组件按 props 调用，hooks 由 REACT_STUB 提供。
+ * 返回 { type, props, children } 形状，方便断言 className / props.onClick / 文本。
+ */
+export function renderTree(node) {
+  if (node === null || node === undefined || node === false) return null;
+  if (Array.isArray(node)) return node.map(renderTree);
+  if (typeof node === 'string' || typeof node === 'number') return node;
+  if (typeof node === 'function') return renderTree(node({}));
+  const { type, props = {}, children = [] } = node;
+  const merged = { ...props };
+  if (children.length > 0) merged.children = children.length === 1 ? children[0] : children;
+  if (typeof type === 'function') return renderTree(type(merged));
+  return { type, props: merged, children: children.map(renderTree) };
+}
+
+/** 深度查找元素树里满足条件的节点。 */
+export function findNode(node, predicate) {
+  if (node === null || node === undefined || typeof node !== 'object') return null;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findNode(item, predicate);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (predicate(node)) return node;
+  for (const child of node.children ?? []) {
+    const hit = findNode(child, predicate);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** 收集元素树中的全部文本，便于断言设置页/浮标渲染内容。 */
+export function textOf(node) {
+  if (node === null || node === undefined || node === false) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  return (node.children ?? []).map(textOf).join('');
+}
+
 const SOURCE = readFileSync(CLIENT_PATH, 'utf8');
 
 export function loadClient({ document, storage } = {}) {
+  OBSERVERS.length = 0;
   const doc = document ?? new FakeDocument();
   const store = storage ?? createStorage();
   let loaded = null;
+  const listeners = new Map();
   const windowStub = {
     localStorage: store.localStorage,
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      listeners.get(type)?.delete(handler);
+    },
+    dispatchEvent(event) {
+      for (const handler of [...(listeners.get(event.type) ?? [])]) handler(event);
+      return true;
+    },
+    requestAnimationFrame: fn => setTimeout(fn, 0),
     __ModuleLoader__: {
       load: definition => {
         loaded = definition.factory(name => {
@@ -340,7 +411,7 @@ export function loadClient({ document, storage } = {}) {
   });
   runInContext(SOURCE, context, { filename: CLIENT_PATH });
   if (!loaded) throw new Error('client bundle did not call __ModuleLoader__.load');
-  return { api: loaded, document: doc, storage: store };
+  return { api: loaded, document: doc, storage: store, window: windowStub, observers: OBSERVERS };
 }
 
 export function flush() {
@@ -350,17 +421,22 @@ export function flush() {
 // ── 假 ctx ──────────────────────────────────────────────────────────────────
 
 export function createCtx({ panels = [], views = [] } = {}) {
-  const state = { registered: [], selected: [], viewSlotReady: false };
+  const state = { registered: [], selected: [], viewSlotReady: false, injections: [] };
 
   const slots = {
     entriesOfSlot(name) {
+      // 动态注册的条目也要出现在 entriesOfSlot 里（真实宿主按 name+id 维护注册表），
+      // 否则启动器注册后再读 registry 会看不到自己，去重/dispose 路径都测不到。
+      const dynamic = state.registered
+        .filter(record => record.spec?.name === name)
+        .map(record => ({ options: record.spec }));
       if (name === 'sidebar.panellist') {
-        return panels.map(panel => ({ options: { id: panel.id, label: panel.label } }));
+        return [...panels.map(panel => ({ options: { id: panel.id, label: panel.label } })), ...dynamic];
       }
       if (name === 'conversation.view') {
-        return views.map(view => ({ options: { id: view.id, label: view.label } }));
+        return [...views.map(view => ({ options: { id: view.id, label: view.label } })), ...dynamic];
       }
-      return [];
+      return dynamic;
     },
     register(spec, Component) {
       const record = { spec, Component };
@@ -371,8 +447,12 @@ export function createCtx({ panels = [], views = [] } = {}) {
       };
     },
     inject(name, factory) {
-      factory();
-      return () => { };
+      // 真实宿主的 inject 回调必须返回同步 disposer，这里保留并暴露给测试核对。
+      const disposer = factory();
+      state.injections.push({ name, disposer });
+      return () => {
+        if (typeof disposer === 'function') disposer();
+      };
     },
     subscribe() {
       return () => { };

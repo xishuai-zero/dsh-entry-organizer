@@ -12,8 +12,9 @@
 - **顶部标签拖拽排序**：会话顶部「对话 / 阅读 / 轨迹 / …」标签可左右拖动重排；「对话」固定首位，不参与拖拽。
 - **跨区搬移**：把侧栏行拖到顶部标签行，该行消失、顶部多出一个同名标签；点标签会用官方 `layout.selectPanel()` 打开对应面板，并出现左上角「← 返回对话」浮标。把标签拖回侧栏（或拖到侧栏空位）即还原成侧栏行，按落点决定插到上方还是下方。
 - **溢出兜底**：标签行宽度放不下时，官方会把标签截断进右侧「…」菜单，那里没有可拖的 DOM 节点；插件在同一个「…」菜单里注册了「把搬入的标签全部移回侧栏」，保证任何情况下都能一键恢复。
-- **持久化**：顺序与搬移状态存 `localStorage` 键 `dsh.entry-organizer.v1`，全局一份，重启后恢复。
-- **设置页**：「设置 → 入口编排」显示侧栏行数 / 标签数 / 已搬入列表，可逐项「移回侧栏」或「恢复默认」。
+- **键盘 / 触屏可达**：「设置 → 入口编排」把「侧栏顺序」「标签顺序」渲染成带 ↑/↓ 按钮的列表，不用拖拽也能逐项调整顺序（拖拽被截断、触屏或无鼠标时仍可操作）。
+- **持久化**：顺序与搬移状态存 `localStorage` 键 `dsh.entry-organizer.v1`（v2 结构），全局一份，重启后恢复；多个窗口之间通过 `storage` 事件实时同步。
+- **设置页**：「设置 → 入口编排」显示侧栏行数 / 可排序标签数 / 已搬入列表，可逐项「移回侧栏」或「恢复默认」。
 - **中英双语**：跟随宿主语言；界面文案带在 `client.js` 的 `DICT` 里。
 
 ## 安装
@@ -25,13 +26,13 @@
 dsh plugin --profile web add dsh-entry-organizer
 
 # 2) 从 GitHub 源码（按 tag 固定版本）
-dsh plugin --profile web add github:xishuai-zero/dsh-entry-organizer#v0.1.0
+dsh plugin --profile web add github:xishuai-zero/dsh-entry-organizer#v0.1.1
 
 # 3) 从 GitHub Release 的预构建 tarball
-dsh plugin --profile web add https://github.com/xishuai-zero/dsh-entry-organizer/releases/download/v0.1.0/dsh-entry-organizer-0.1.0.tgz
+dsh plugin --profile web add https://github.com/xishuai-zero/dsh-entry-organizer/releases/download/v0.1.1/dsh-entry-organizer-0.1.1.tgz
 ```
 
-已发布：npm [`dsh-entry-organizer`](https://www.npmjs.com/package/dsh-entry-organizer) · GitHub Releases [`v0.1.0`](https://github.com/xishuai-zero/dsh-entry-organizer/releases/tag/v0.1.0)。
+已发布：npm [`dsh-entry-organizer`](https://www.npmjs.com/package/dsh-entry-organizer) · GitHub Releases [`v0.1.1`](https://github.com/xishuai-zero/dsh-entry-organizer/releases/tag/v0.1.1)。
 
 > `web` 是市场里通用的 profile 名；桌面版等安装的 profile 名可能不同（本机桌面版为 `desktop`）。不确定时用 `dsh plugin --help` 或官方文档确认，把 `--profile web` 换成你的 profile 即可。
 
@@ -39,22 +40,40 @@ dsh plugin --profile web add https://github.com/xishuai-zero/dsh-entry-organizer
 
 **从旧名升级**：v0.1.0 之前的包名是 `dsh-entry-arrange`。升级到本包后，首次加载会读取旧键 `dsh.entry-arrange.v1` 并迁移到新键 `dsh.entry-organizer.v1`，已有的顺序与搬移不会丢；旧键保留不删。
 
+**升级到 0.1.1**：存储结构从 v1 升级到 v2（排序键由「显示文案」改为稳定的 panel/view id），首次加载自动迁移并回写，不需要手动清 `localStorage`；旧结构里的顺序会被完整保留。
+
 ## 已知限制
 
 都是宿主官方契约边界，不是实现偷懒：
 
-1. **「…」菜单里的条目不能拖**：官方标签行按“注册顺序取前 N 个”渲染（`visibleViewLimit = max(1, floor((width - 48) / 120))`），被截断的 View 根本不生成标签 DOM，第三方既拿不到节点也无法提权。因此只能提供菜单内的一键还原，不能提供“从菜单里拖出来”。
-2. **标签重排只对可见标签生效**：同上，溢出标签的顺序由官方按估算宽度分组，插件无法改它的可见性。
+1. **「…」菜单里的条目不能拖**：官方标签行把 `conversation.view` 条目按 `priority`/`order` 排序，再按可用宽度切出前 N 个（`visibleViewLimit = max(1, floor((width - 48) / 120))`）；被截断的 View 根本不生成标签 DOM，第三方拿不到节点。因此只能提供菜单内的一键还原，不能提供“从菜单里拖出来”。
+2. **标签重排只对可见标签生效，且可见集合是按 `order` 排序后切前 N 个**：把 `order` 调小只能让条目更容易进入可见集，本插件不修改官方条目的排序，只调整自己启动器的 `order`。
 3. **不重建别人的面板组件**：跨区只做“启动器”——标签点击走官方 `layout.selectPanel()` 打开真正的 `main` 面板。直接手写渲染别的插件的面板 Component 会丢掉它们自己的 `inject` props（渲染器把注入封装在条目内部），所以不做。
 4. **不接管官方 pin**：侧栏行显隐仍由官方「更多 → 固定/取消」决定；本插件只负责顺序与搬移，两者互不覆盖。
-5. **插件管理行可被拖动**：没有硬编码排除 `id === "plugins"` 的行；若希望锁死它，可后续加开关（v0.1.1 计划，不在本版）。
+5. **插件管理行可被拖动**：没有硬编码排除 `id === "plugins"` 的行；若希望锁死它，可后续加开关（未在本版提供）。
 6. **状态只在本机**：顺序与搬移存浏览器 `localStorage`，不随账号同步、不跨设备；换浏览器或清站点数据会回到默认顺序。
+7. **依赖宿主真实 DOM 契约**：见下方「宿主 DOM 契约」一节；宿主大改侧栏/标签结构时需要同步适配（代码里已为多数选择器准备了兜底）。
+8. **切换界面语言后，已搬入标签的文案要等重新登记才更新**：排序与搬移按 panel id 存，不会丢；但启动器文案是搬移当时冻结的字符串，切语言后需要重新搬一次才换成新语言。
+
+## 宿主 DOM 契约
+
+本插件不移动、不重建官方节点，只按下面这些可观察标记工作；宿主改版导致某条失效时，插件会安静跳过对应部分（记录到设置页诊断），而不是抛错：
+
+| 用途 | 依赖的标记 | 兜底 |
+| --- | --- | --- |
+| 找到侧栏面板行 | `[data-slot="sidebar.panellist"]` 的 `closest('button')` | 扫 `nav` 直系、有 `aria-label` 且无 `aria-haspopup` 的按钮 |
+| 行身份 / 文案 | 行的 `aria-label`，没有时用 `textContent` | 空标签行整行跳过（不会让后续行错位） |
+| 「更多」排序 | 侧栏 `nav` 直系子节点里的 `button[aria-haspopup]`，或包着它的容器 | 找不到就不改它的 order |
+| 排序生效 | 侧栏 `nav` 与标签容器的 flex `order` | 只写 `style.order` |
+| 标签行 | `[data-conversation-tabs]` 里的 `button[role="tab"]`，文案取 `textContent` | 找不到标签行时只做侧栏部分 |
+| 当前打开的面板 | 行上的 `aria-current="page"` | 视为停在对话视图 |
+| 浮标位置 | `[data-slot="sidebar"]` 的盒宽（该 outlet 为 `display:contents`，实测宽度 0），其次 `grid-template-columns` 首列 | 固定 16px |
 
 ## 兼容性
 
 | 项 | 值 |
 | --- | --- |
-| 宿主 DSH | `>=0.2.1-rc.1`（`engines.dsh`；在 0.2.1-rc.5 上实测） |
+| 宿主 DSH | `>=0.2.1-rc.5`（`engines.dsh`；所有契约均在 0.2.1-rc.5 上实测） |
 | Node.js | `>=22.19.0`（`engines.node`） |
 | 运行依赖 | 无（`dependencies` 为空；React 由宿主 shell 注入） |
 | 宿主声明 | `dsh.bundle.patch: ./cordis.patch.yml` + `dsh.client.platform: web` |
@@ -65,12 +84,12 @@ dsh plugin --profile web add https://github.com/xishuai-zero/dsh-entry-organizer
 
 ```sh
 npm run check        # node --check index.js && node --check client.js
-npm test             # node --test：9 个纯函数用例 + 10 个 mini-DOM 集成用例
+npm test             # node --test：10 个纯函数/存储用例 + 28 个 mini-DOM 集成与组件用例
 node test/arrange.test.mjs   # 若环境禁止子进程（spawn EPERM）时直接执行测试文件
 node test/dom.test.mjs
 ```
 
-没有引入 jsdom：`test/harness.mjs` 自带最小 DOM（选择器、事件捕获/冒泡、`getBoundingClientRect`、内存 localStorage、MutationObserver 空实现），并用 `vm` 真正执行 `client.js`。
+没有引入 jsdom：`test/harness.mjs` 自带最小 DOM（选择器、事件捕获/冒泡、`getBoundingClientRect`、内存 localStorage、MutationObserver 空实现、可派发的 `window` 事件），用 `vm` 真正执行 `client.js`，并提供 `renderTree()` 递归展开函数组件，用来测试设置页与浮标渲染。
 
 ## 结构
 
@@ -88,14 +107,16 @@ node test/dom.test.mjs
 
 ## 实现要点
 
-- 排序只写行/标签的 `style.order`（侧栏 `nav` 与标签容器都是 flex），**不移动、不重建官方节点**。
-- 侧栏行以 `aria-label` 对齐官方解析后的 label；标签以 `textContent` 对齐，首个别名为「对话」的标签固定 `order: 0`。
-- 搬移时通过 `ctx.slots.register({ name: 'conversation.view', id: 'ea-<hash>', label, locale }, Launcher)` 动态注册一个真实 View（注销即卸载），启动器组件只做“切回对话 + 打开面板”。
-- 浮标注册在 `shell.overlay`（list slot），仅当“被搬走的面板当前可见”时显示；位置跟随侧栏宽度（读 `grid-template-columns` 第一列）。
+- 排序只写行/标签的 `style.order`（侧栏 `nav` 与标签容器都是 flex），**不移动、不重建官方节点**；空标签行逐行跳过，避免下标错配。
+- 身份用稳定 id：侧栏排序键 `p:<panel id>`、标签键 `v:<view id>`；拿不到 id 时（宿主还没注册该条目）退回 `~<label>`，之后自动升级。存储结构 v2 = `{ v: 2, sidebarOrder: [...], moved: [{ id, label }], tabOrder: [...] }`，v1 数据自动迁移。
+- 搬移时通过 `ctx.slots.register({ name: 'conversation.view', id: 'ea-<hash>', label, locale }, Launcher)` 动态注册一个真实 View（注销即卸载），启动器组件只做“回对话 + 打开面板”；每次同步都会清理注册表里已消失的搬移项。
+- 顺序变化在同步阶段立即写 `localStorage`；`storage` 事件让其他窗口实时重载。
+- `MutationObserver` 只对影响侧栏/标签行的变更触发同步，拖拽标记精确清理（不再每个 `dragover` 全文档扫描）。
+- 浮标注册在 `shell.overlay`（list slot），仅当“被搬走的面板当前可见”时显示；首次若发现热加载残留的旧占位框会接管并去重。
 
 ## 数据与隐私
 
-不联网、不收集数据、不读文件。只写浏览器 `localStorage` 的 `dsh.entry-organizer.v1` 一个键（JSON：`{ v, sidebarOrder, moved, tabOrder }`）；迁移时只读旧键 `dsh.entry-arrange.v1`，不删除。
+不联网、不收集数据、不读文件。只写浏览器 `localStorage` 的 `dsh.entry-organizer.v1` 一个键（JSON：`{ v: 2, sidebarOrder, moved: [{ id, label }], tabOrder }`，排序键形如 `p:<panel id>` / `v:<view id>`）；迁移时只读旧键 `dsh.entry-arrange.v1`，不删除。
 
 ## License
 

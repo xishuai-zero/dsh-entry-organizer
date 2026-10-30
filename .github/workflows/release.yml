@@ -1,6 +1,6 @@
 name: Release
 
-# 推 v* tag 时：打包 tarball 并创建 GitHub Release。
+# 推 v* tag 时：先校验 tag 与 package.json 版本一致、测试全过，再打包并创建 GitHub Release。
 # awesome-dsh-plugin 收录条目里的 tarball 字段指向这个 Release 资产。
 on:
   push:
@@ -19,6 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Verify tag matches package.json version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} 与 package.json version ${VERSION} 不一致" >&2
+            exit 1
+          fi
+
+      - name: Syntax check
+        run: npm run check
+
+      - name: Tests
+        run: npm test
 
       - name: Pack tarball
         run: npm pack

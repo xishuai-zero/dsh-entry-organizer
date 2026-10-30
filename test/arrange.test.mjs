@@ -7,6 +7,9 @@ import { createStorage, loadClient } from './harness.mjs';
 
 const KEY = 'dsh.entry-organizer.v1';
 const LEGACY_KEY = 'dsh.entry-arrange.v1';
+/** v2 排序键：侧栏用 `p:<panel id>`，标签用 `v:<view id>`；拿不到 id 时才退回 `~<label>`。 */
+const P = id => 'p:' + id;
+const V = id => 'v:' + id;
 
 function internals(options) {
   const { api } = loadClient(options);
@@ -61,16 +64,32 @@ test('无存储时状态为空', () => {
 test('从合法存储恢复顺序与搬移集合', () => {
   const storage = createStorage({
     [KEY]: JSON.stringify({
+      v: 2,
+      sidebarOrder: [P('dsh-market'), P('dsh-context')],
+      tabOrder: [V('read'), V('trajectory')],
+      moved: [{ id: 'dsh-context', label: '洞察' }],
+    }),
+  });
+  const { controller } = internals({ storage });
+  eq(controller.state.sidebarOrder, [P('dsh-market'), P('dsh-context')]);
+  eq(controller.state.tabOrder, [V('read'), V('trajectory')]);
+  eq(controller.state.moved, [{ id: 'dsh-context', label: '洞察' }]);
+});
+
+test('v1 裸文案排序键迁移成稳定 key 并以 v2 格式回写', () => {
+  const storage = createStorage({
+    [KEY]: JSON.stringify({
       v: 1,
       sidebarOrder: ['市场', '洞察'],
-      tabOrder: ['阅读', '洞察'],
+      tabOrder: ['阅读'],
       moved: [{ label: '洞察', id: 'dsh-context' }],
     }),
   });
   const { controller } = internals({ storage });
-  eq(controller.state.sidebarOrder, ['市场', '洞察']);
-  eq(controller.state.tabOrder, ['阅读', '洞察']);
-  eq(controller.state.moved, [{ label: '洞察', id: 'dsh-context' }]);
+  eq(controller.state.sidebarOrder, ['~市场', '~洞察']);
+  eq(controller.state.tabOrder, ['~阅读']);
+  eq(controller.state.moved, [{ id: 'dsh-context', label: '洞察' }]);
+  eq(JSON.parse(storage.map.get(KEY)).v, 2);
 });
 
 test('损坏或异构的存储被安静忽略', () => {
@@ -91,20 +110,21 @@ test('旧键 dsh.entry-arrange.v1 的状态迁移到新键', () => {
   });
   const storage = createStorage({ [LEGACY_KEY]: legacy });
   const { controller } = internals({ storage });
-  eq(controller.state.sidebarOrder, ['市场', '洞察']);
-  eq(controller.state.tabOrder, ['阅读']);
-  eq(controller.state.moved, [{ label: '洞察', id: 'dsh-context' }]);
+  eq(controller.state.sidebarOrder, ['~市场', '~洞察']);
+  eq(controller.state.tabOrder, ['~阅读']);
+  eq(controller.state.moved, [{ id: 'dsh-context', label: '洞察' }]);
   const written = JSON.parse(storage.map.get(KEY));
-  eq(written.sidebarOrder, ['市场', '洞察']);
-  eq(written.moved, [{ label: '洞察', id: 'dsh-context' }]);
+  eq(written.v, 2);
+  eq(written.sidebarOrder, ['~市场', '~洞察']);
+  eq(written.moved, [{ id: 'dsh-context', label: '洞察' }]);
 });
 
 test('新键优先于旧键，旧键不再回写', () => {
   const storage = createStorage({
-    [KEY]: JSON.stringify({ v: 1, sidebarOrder: ['新'], tabOrder: [], moved: [] }),
+    [KEY]: JSON.stringify({ v: 2, sidebarOrder: [P('a')], tabOrder: [], moved: [] }),
     [LEGACY_KEY]: JSON.stringify({ v: 1, sidebarOrder: ['旧'], tabOrder: [], moved: [] }),
   });
   const { controller } = internals({ storage });
-  eq(controller.state.sidebarOrder, ['新']);
-  eq(JSON.parse(storage.map.get(KEY)).sidebarOrder, ['新']);
+  eq(controller.state.sidebarOrder, [P('a')]);
+  eq(JSON.parse(storage.map.get(KEY)).sidebarOrder, [P('a')]);
 });
