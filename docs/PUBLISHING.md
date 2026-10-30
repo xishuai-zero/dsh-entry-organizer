@@ -14,8 +14,8 @@ npm pack --dry-run
 
 已核实的事实：
 
-- npm 包已发布 `0.1.0`（2026-10-30）；当前仓库版本 **0.1.1**，发布后在下方「发布记录」补一行。
-- 本机宿主版本 0.2.1-rc.5，满足 `engines.dsh: ">=0.2.1-rc.1"`。
+- npm 包已发布 `0.1.1`（2026-10-30），`dist-tags.latest` 指向 `0.1.1`；`0.1.0` 仍可安装。
+- 本机宿主版本 0.2.1-rc.5，满足 `engines.dsh: ">=0.2.1-rc.5"`。
 - 零依赖、无构建步骤，安装不需要 `allowBuilds` 构建授权。
 - `package.json` 的 `publishConfig.registry` 已固定为官方 registry；若 npm CLI 的全局 registry 被镜像覆盖，发布时仍要显式带 `--registry=https://registry.npmjs.org/`（镜像只读，不能发布）。
 
@@ -124,10 +124,15 @@ dsh plugin --profile web add dsh-entry-organizer
 | 版本 | 日期 | npm | GitHub Release |
 | --- | --- | --- | --- |
 | 0.1.0 | 2026-10-30 | ✅ `dsh-entry-organizer@0.1.0` | ✅ `v0.1.0` |
+| 0.1.1 | 2026-10-30 | ✅ `dsh-entry-organizer@0.1.1` | ✅ `v0.1.1` |
+
+三条产物指纹一致（2026-10-30 核验）：本地 `npm pack`、npm registry tarball、GitHub Release 资产 sha256 均为 `c3aaaf9201ae67555e2867da3845b7ee71bd7f9dd9aa960ac674333565926561`（25,860 B）。
 
 ## 待补 / 已知缺口
 
 - **截图**：README 目前没有插件功能截图（早期的侧栏图属于其它插件）。补图后放进 `docs/screenshots/`，在 README 引用；也可在 awesome 条目加可选 `screenshots` 字段。
 - **icon**（可选）：GitHub 托管的 PNG 位图（禁 SVG），约 180×180；不写则回退作者头像。
-- **账号核验**：`xishuai-zero` 未能从本机远程核验（GitHub API 经本地加速器间歇 TLS 失败）；首次 push 会自然验证。
+- **账号核验**：`xishuai-zero` 已由 2026-10-30 的推送与 Release 间接验证（首次 push 时 GCM 认证成功）。
 - **环境**：无 `gh` CLI、无 SSH key；推送用 HTTPS + GCM，符合上面的步骤。
+- **awesome 投稿**：YAML 已备（`docs/submission/`），需等仓库创建满 24h（北京时间 2026-10-31 11:29 后）再开 PR。
+- **npm 令牌**：本次发布用 30 天有效的 bypass-2FA Granular Token（2026-11-29 到期），发布完成后应在 npm → Access Tokens 及时删除。
