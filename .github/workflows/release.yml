@@ -1,0 +1,29 @@
+name: Release
+
+# 推 v* tag 时：打包 tarball 并创建 GitHub Release。
+# awesome-dsh-plugin 收录条目里的 tarball 字段指向这个 Release 资产。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Pack tarball
+        run: npm pack
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" ./*.tgz --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,64 @@
+{
+  "name": "dsh-entry-organizer",
+  "version": "0.1.0",
+  "description": "DSH plugin — drag sidebar panel entries and conversation view tabs into any order, and move entries between the sidebar and the tab strip as real tabs. · 入口编排：侧栏面板条目自由拖拽排序、顶部标签自由排序，条目可在两个区域之间搬移。",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.1-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "test:unit": "node test/arrange.test.mjs",
+    "test:dom": "node test/dom.test.mjs",
+    "test": "node --test test/arrange.test.mjs test/dom.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xishuai-zero/dsh-entry-organizer.git"
+  },
+  "homepage": "https://github.com/xishuai-zero/dsh-entry-organizer#readme",
+  "bugs": {
+    "url": "https://github.com/xishuai-zero/dsh-entry-organizer/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "sidebar",
+    "tabs",
+    "drag",
+    "reorder",
+    "layout",
+    "ui"
+  ],
+  "author": "xishuai-zero",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
+}
