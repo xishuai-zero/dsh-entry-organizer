@@ -31,6 +31,8 @@ dsh plugin --profile web add github:xishuai-zero/dsh-entry-organizer#v0.1.0
 dsh plugin --profile web add https://github.com/xishuai-zero/dsh-entry-organizer/releases/download/v0.1.0/dsh-entry-organizer-0.1.0.tgz
 ```
 
+已发布：npm [`dsh-entry-organizer`](https://www.npmjs.com/package/dsh-entry-organizer) · GitHub Releases [`v0.1.0`](https://github.com/xishuai-zero/dsh-entry-organizer/releases/tag/v0.1.0)。
+
 > `web` 是市场里通用的 profile 名；桌面版等安装的 profile 名可能不同（本机桌面版为 `desktop`）。不确定时用 `dsh plugin --help` 或官方文档确认，把 `--profile web` 换成你的 profile 即可。
 
 安装后重启 DSH（或等宿主热加载）。验证：左侧栏出现可拖拽行、设置页出现「入口编排」。卸载请用插件管理界面或参考官方文档从 profile 中移除该包。

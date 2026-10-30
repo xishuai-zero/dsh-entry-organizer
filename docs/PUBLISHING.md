@@ -16,7 +16,7 @@ npm pack --dry-run
 
 已核实的事实：
 
-- npm 上 `dsh-entry-organizer` 未被占用（registry 返回 404）。
+- npm 包已发布：`dsh-entry-organizer@0.1.0`（2026-10-30，见下方「发布记录」）。
 - 本机宿主版本 0.2.1-rc.5，满足 `engines.dsh: ">=0.2.1-rc.1"`。
 - 零依赖、无构建步骤，安装不需要 `allowBuilds` 构建授权。
 - 本机 npm 默认 registry 是只读镜像 `https://registry.npmmirror.com/`，**不能发布**；`package.json` 已写 `publishConfig.registry = https://registry.npmjs.org/`。
@@ -73,6 +73,14 @@ npm view dsh-entry-organizer version --registry=https://registry.npmjs.org/
 ```
 
 发布后检查 npmjs 页面：README 渲染、`files` 列表、`engines`。回滚（以 npm 政策为准）：72 小时内 `npm unpublish dsh-entry-organizer@0.1.0`。
+
+### 真实环境踩坑记录（2026-10-30）
+
+- 本机默认 registry 是只读镜像，任何发布命令都必须显式带 `--registry=https://registry.npmjs.org/`。
+- 账号 `xishuai-zero` 在 npm 网页开启了 2FA（安全密钥），但这台电脑的 Windows 安全中心只弹「手机扫码」，没有「此设备 / Windows Hello」选项，扫码又提示手机上无该通行密钥 —— **安全密钥认证在本机走不通**。
+- 因此改用 **Granular Access Token（勾 Bypass 2FA，30 天有效）** 走 `--userconfig` 临时 npmrc 发布；令牌**不要写进仓库或长期文件**，用完在 npm 网页 Access Tokens 里删除。
+- 令牌发布后 npm 一度显示占位版本 `0.0.0-stage`（暂存发布机制），约 1 分钟后 `0.1.0` 正式可用；占位版本已 `npm deprecate` 标记为忽略。
+- npm 元数据/ tarball 在刚发布时可能短暂 404（CDN 传播），稍等重试即可；`dsh plugin add dsh-entry-organizer` 会解析到 `latest = 0.1.0`。
 
 ## 5. 安装验收（推送后 / 发布后）
 
